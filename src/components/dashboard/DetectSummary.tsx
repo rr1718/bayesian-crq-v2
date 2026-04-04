@@ -17,7 +17,7 @@ const TIMELINE_EVENTS: TimelineEvent[] = [
   {
     id: 1,
     date: "13 Mar",
-    title: "Suspicious Email Identified by Darktrace/Email",
+    title: "Suspicious Email Identified by BayesianLab/Email",
     startTime: "Wed 13 Mar, 09:13:00",
     endTime: "Wed 13 Mar, 09:14:00",
     progress: 100,

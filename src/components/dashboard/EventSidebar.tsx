@@ -19,7 +19,7 @@ const EVENTS: SecurityEvent[] = [
   {
     id: 1,
     timestamp: "Wed 13 Mar, 09:13:00",
-    title: "Suspicious Email Identified by Darktrace/Email",
+    title: "Suspicious Email Identified by BayesianLab/Email",
     severity: "medium",
     startTime: "Wed 13 Mar, 09:13:00",
     endTime: "Wed 13 Mar, 09:14:00",

@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Darktrace ActiveAI Security Platform",
+  title: "BayesianLab Security Platform",
   description:
     "AI-native cybersecurity platform with self-learning threat detection, autonomous response, and full network visibility.",
 };

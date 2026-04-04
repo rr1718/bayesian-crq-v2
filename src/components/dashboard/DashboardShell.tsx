@@ -46,7 +46,7 @@ export default function DashboardShell() {
           </button>
           <div className="flex items-center gap-2">
             <span className="text-sm font-bold tracking-wider text-white uppercase">
-              Darktrace
+              BayesianLab
             </span>
           </div>
           <span className="text-sm text-text-secondary ml-2">Dashboard</span>
