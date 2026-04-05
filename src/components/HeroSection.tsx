@@ -53,15 +53,16 @@ export default function HeroSection() {
 
             {/* CTA area */}
             <div className="flex flex-wrap items-center gap-4 pt-2">
-              <a href="/dashboard" className="hero-cta group relative inline-flex items-center gap-2 rounded-lg bg-primary px-8 py-3.5 text-sm font-semibold text-white shadow-lg shadow-primary/25 transition-all duration-300 hover:shadow-xl hover:shadow-primary/40 hover:scale-[1.03] active:scale-[0.98]">
+              <a href="/platform" className="hero-cta group relative inline-flex items-center gap-2 rounded-lg bg-primary px-8 py-3.5 text-sm font-semibold text-white shadow-lg shadow-primary/25 transition-all duration-300 hover:shadow-xl hover:shadow-primary/40 hover:scale-[1.03] active:scale-[0.98]">
                 <span className="relative z-10 flex items-center gap-2">
-                  Launch Live Dashboard
+                  Launch Full Platform
                   <Zap className="h-4 w-4 transition-transform duration-300 group-hover:rotate-12" />
                 </span>
                 {/* Glow ring on hover */}
                 <span className="absolute inset-0 rounded-lg bg-gradient-to-r from-primary via-accent to-accent-blue opacity-0 blur-lg transition-opacity duration-500 group-hover:opacity-40" />
               </a>
               <a href="/dashboard" className="inline-flex items-center gap-2 rounded-lg border border-surface-border bg-surface/50 px-6 py-3.5 text-sm font-medium text-foreground backdrop-blur-sm transition-all duration-300 hover:border-primary/60 hover:bg-surface-light/60">
+
                 <Globe className="h-4 w-4 text-accent" />
                 View Live Demo
               </a>
