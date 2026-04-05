@@ -2,359 +2,768 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import {
-  Brain, Search, GitMerge, FileText, Zap, Shield, Clock, CheckCircle,
-  Play, Eye, AlertTriangle, Database, Mail, Monitor, Globe,
-  ChevronRight, X, Loader2,
+  Brain,
+  Search,
+  GitMerge,
+  FileText,
+  Zap,
+  Shield,
+  Clock,
+  Users,
+  AlertTriangle,
+  CheckCircle,
+  Play,
+  Eye,
+  Target,
 } from "lucide-react";
+import {
+  generateInvestigations,
+  generateInvestigation,
+} from "@/lib/platformData";
+import type { Investigation } from "@/lib/platformData";
 
-interface Investigation {
-  id: string; severity: "critical" | "high" | "medium" | "low";
-  title: string; status: "completed" | "in_progress" | "escalated";
-  mitre: string[]; assets: number; triageTime: string;
+/* ------------------------------------------------------------------ */
+/*  CSS keyframe injection                                             */
+/* ------------------------------------------------------------------ */
+
+const STYLE_ID = "ai-analyst-animations";
+
+function ensureStyles() {
+  if (typeof document === "undefined") return;
+  if (document.getElementById(STYLE_ID)) return;
+  const style = document.createElement("style");
+  style.id = STYLE_ID;
+  style.textContent = `
+    @keyframes analyst-fade-in {
+      from { opacity: 0; transform: translateY(8px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes analyst-pulse {
+      0%, 100% { opacity: 0.4; }
+      50% { opacity: 1; }
+    }
+    @keyframes analyst-dot-1 { 0%,20% { opacity:0; } 30%,100% { opacity:1; } }
+    @keyframes analyst-dot-2 { 0%,40% { opacity:0; } 50%,100% { opacity:1; } }
+    @keyframes analyst-dot-3 { 0%,60% { opacity:0; } 70%,100% { opacity:1; } }
+    .analyst-enter { animation: analyst-fade-in 0.4s ease-out both; }
+    .analyst-pulse { animation: analyst-pulse 1.5s ease-in-out infinite; }
+    .analyst-dot-1 { animation: analyst-dot-1 1.4s ease-in-out infinite; }
+    .analyst-dot-2 { animation: analyst-dot-2 1.4s ease-in-out infinite; }
+    .analyst-dot-3 { animation: analyst-dot-3 1.4s ease-in-out infinite; }
+  `;
+  document.head.appendChild(style);
 }
 
-const investigations: Investigation[] = [
-  { id: "INV-28471", severity: "critical", title: "Multi-stage phishing to DC lateral movement", status: "completed", mitre: ["Initial Access", "Lateral Movement", "Exfiltration"], assets: 14, triageTime: "18s" },
-  { id: "INV-28470", severity: "high", title: "Suspicious PowerShell execution chain on finance endpoints", status: "in_progress", mitre: ["Execution", "Defense Evasion"], assets: 6, triageTime: "—" },
-  { id: "INV-28469", severity: "medium", title: "Anomalous DNS queries to newly registered domain", status: "completed", mitre: ["Command and Control"], assets: 2, triageTime: "9s" },
-  { id: "INV-28468", severity: "critical", title: "Credential stuffing attempt against VPN gateway", status: "escalated", mitre: ["Credential Access", "Initial Access"], assets: 1, triageTime: "31s" },
-  { id: "INV-28467", severity: "high", title: "Encoded payload delivery via Teams attachment", status: "completed", mitre: ["Initial Access", "Execution"], assets: 3, triageTime: "14s" },
-  { id: "INV-28466", severity: "low", title: "Failed MFA brute force on service account", status: "completed", mitre: ["Credential Access"], assets: 1, triageTime: "6s" },
-  { id: "INV-28465", severity: "high", title: "Unusual cloud API calls from compromised token", status: "in_progress", mitre: ["Persistence", "Collection"], assets: 22, triageTime: "—" },
-  { id: "INV-28464", severity: "medium", title: "Rogue scheduled task creation on web servers", status: "completed", mitre: ["Persistence", "Privilege Escalation"], assets: 4, triageTime: "12s" },
-];
+/* ------------------------------------------------------------------ */
+/*  Helpers                                                            */
+/* ------------------------------------------------------------------ */
 
-const sevColor: Record<string, string> = {
-  critical: "bg-red-500/20 text-red-400 border-red-500/30",
-  high: "bg-orange-500/20 text-orange-400 border-orange-500/30",
-  medium: "bg-yellow-500/20 text-yellow-400 border-yellow-500/30",
-  low: "bg-blue-500/20 text-blue-400 border-blue-500/30",
+const SEV_COLORS: Record<string, string> = {
+  critical: "bg-danger text-white",
+  high: "bg-warning text-black",
+  medium: "bg-accent-blue text-white",
+  low: "bg-success text-white",
 };
 
-const statusStyle: Record<string, string> = {
-  completed: "text-[#00d4aa]", in_progress: "text-yellow-400", escalated: "text-red-400",
+const STATUS_COLORS: Record<string, string> = {
+  queued: "bg-text-secondary/20 text-text-secondary",
+  in_progress: "bg-accent-blue/20 text-accent-blue",
+  completed: "bg-success/20 text-success",
+  escalated: "bg-danger/20 text-danger",
 };
 
-const dataSources = ["Network Logs", "Email Metadata", "Cloud API Calls", "Endpoint Telemetry", "Identity Records", "Threat Intelligence"];
-const correlatedEvents = [
-  "Email with malicious link received by j.martinez@corp",
-  "Credential harvest page accessed from WKS-FIN-042",
-  "Unusual NTLM auth from WKS-FIN-042 to DC-PROD-01",
-  "PowerShell encoded command execution on DC-PROD-01",
-  "4.7GB data transfer to external IP via encrypted channel",
-];
-const recommendedActions = [
-  "Isolate WKS-FIN-042", "Reset j.martinez credentials", "Block external IP range",
-  "Deploy enhanced monitoring on DC-PROD-01", "Initiate incident response playbook",
-];
+function formatRelative(d: Date) {
+  const diff = Date.now() - d.getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.floor(hrs / 24)}d ago`;
+}
 
-const narrative = `At 09:14 UTC, a phishing email containing a credential-harvesting link was delivered to j.martinez@corp, bypassing email gateway controls via a lookalike domain. The user clicked the link at 09:17 UTC from workstation WKS-FIN-042, submitting domain credentials to an attacker-controlled server hosted on infrastructure matching known threat actor TA-4091 patterns.
+/* ------------------------------------------------------------------ */
+/*  Thinking Dots                                                      */
+/* ------------------------------------------------------------------ */
 
-Within 8 minutes of credential capture, the attacker authenticated to the corporate network using the compromised credentials and initiated lateral movement from WKS-FIN-042 to DC-PROD-01 using NTLM pass-the-hash techniques. On DC-PROD-01, an encoded PowerShell command was executed to establish persistence via a scheduled task and begin reconnaissance of Active Directory objects.
+function ThinkingDots() {
+  return (
+    <span className="inline-flex gap-0.5 ml-1">
+      <span className="analyst-dot-1">.</span>
+      <span className="analyst-dot-2">.</span>
+      <span className="analyst-dot-3">.</span>
+    </span>
+  );
+}
 
-Between 09:32 and 10:14 UTC, approximately 4.7GB of data was exfiltrated from DC-PROD-01 to an external IP (198.51.100.47) over an encrypted channel on port 443, masquerading as legitimate HTTPS traffic. The data transfer pattern is consistent with staged exfiltration using chunked encoding to evade DLP controls.
+/* ------------------------------------------------------------------ */
+/*  Sub-components                                                     */
+/* ------------------------------------------------------------------ */
 
-Severity assessment: CRITICAL. The attack chain demonstrates sophisticated tradecraft including credential harvesting, lateral movement, privilege escalation, and data exfiltration. Immediate containment actions are required to prevent further compromise.`;
-
-export default function AIAnalystModule({ defaultTab }: { defaultTab?: string }) {
-  const [tab, setTab] = useState(defaultTab || "queue");
-  const [selected, setSelected] = useState<Investigation | null>(null);
-  // Live investigation state
-  const [simStep, setSimStep] = useState(0);
-  const [simRunning, setSimRunning] = useState(false);
-  const [checkedSources, setCheckedSources] = useState<number>(0);
-  const [shownEvents, setShownEvents] = useState<number>(0);
-  const [executed, setExecuted] = useState<Set<number>>(new Set());
-  const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
-
-  const clearTimers = useCallback(() => {
-    timers.current.forEach(clearTimeout);
-    timers.current = [];
-  }, []);
-
-  const startSimulation = useCallback(() => {
-    clearTimers();
-    setSimStep(0); setCheckedSources(0); setShownEvents(0); setExecuted(new Set());
-    setSimRunning(true); setTab("live");
-    const t = (fn: () => void, ms: number) => { timers.current.push(setTimeout(fn, ms)); };
-    t(() => setSimStep(1), 1000);
-    t(() => setSimStep(2), 3000);
-    for (let i = 0; i < 6; i++) t(() => setCheckedSources(p => p + 1), 3500 + i * 500);
-    t(() => setSimStep(3), 6000);
-    for (let i = 0; i < 5; i++) t(() => setShownEvents(p => p + 1), 6500 + i * 600);
-    t(() => setSimStep(4), 9000);
-    t(() => { setSimStep(5); setSimRunning(false); }, 11000);
-  }, [clearTimers]);
-
-  useEffect(() => clearTimers, [clearTimers]);
-
-  const progress = simStep === 0 ? 0 : simStep === 1 ? 15 : simStep === 2 ? 35 : simStep === 3 ? 60 : simStep === 4 ? 85 : 100;
-
-  const handleExecute = (i: number) => setExecuted(prev => new Set(prev).add(i));
+function StatsBar({ investigations }: { investigations: Investigation[] }) {
+  const total = investigations.length;
+  const inProgress = investigations.filter((i) => i.status === "in_progress").length;
+  const completed = investigations.filter((i) => i.status === "completed").length;
+  const escalated = investigations.filter((i) => i.status === "escalated").length;
+  const avgTriage =
+    investigations.length > 0
+      ? Math.round(
+          investigations.reduce((s, i) => s + i.triageTimeSeconds, 0) / investigations.length
+        )
+      : 0;
+  const fteSaved =
+    investigations.length > 0
+      ? (
+          investigations.reduce((s, i) => s + i.manualEquivalentMinutes, 0) / 60
+        ).toFixed(1)
+      : "0.0";
 
   const stats = [
-    { label: "Total Investigations", value: "1,847", icon: Search },
-    { label: "In Progress", value: "3", icon: Loader2 },
-    { label: "Completed", value: "1,831", icon: CheckCircle },
-    { label: "Escalated", value: "13", icon: AlertTriangle },
-    { label: "Avg Triage", value: "23s", icon: Clock },
-    { label: "FTE Saved", value: "~28", icon: Zap },
+    { label: "Total Investigations", value: total, icon: FileText, color: "text-accent" },
+    { label: "In Progress", value: inProgress, icon: Clock, color: "text-accent-blue" },
+    { label: "Completed", value: completed, icon: CheckCircle, color: "text-success" },
+    { label: "Escalated", value: escalated, icon: AlertTriangle, color: "text-danger" },
+    { label: "Avg Triage Time", value: `${avgTriage}s`, icon: Zap, color: "text-warning" },
+    {
+      label: "FTE Equivalent Saved",
+      value: `${fteSaved}h`,
+      icon: Users,
+      color: "text-primary-light",
+    },
   ];
 
   return (
-    <div className="space-y-6">
-      {/* Tabs */}
-      <div className="flex items-center gap-4">
-        <div className="flex rounded-lg border border-[#2a2b3d] bg-[#12131f] p-1">
-          {[{ id: "queue", label: "Queue" }, { id: "live", label: "Live Investigation" }].map(t => (
-            <button key={t.id} onClick={() => setTab(t.id)}
-              className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${tab === t.id ? "bg-[#6c3bf5] text-white" : "text-[#8892a4] hover:text-white"}`}>
-              {t.label}
-            </button>
-          ))}
+    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
+      {stats.map((s) => (
+        <div
+          key={s.label}
+          className="bg-surface-light border border-surface-border rounded-lg p-3"
+        >
+          <div className="flex items-center gap-2 mb-1">
+            <s.icon size={14} className={s.color} />
+            <span className="text-xs text-text-secondary truncate">{s.label}</span>
+          </div>
+          <div className={`text-xl font-bold ${s.color}`}>{s.value}</div>
         </div>
-        {tab === "queue" && (
-          <button onClick={startSimulation}
-            className="ml-auto flex items-center gap-2 px-4 py-2 rounded-lg bg-[#6c3bf5] hover:bg-[#5b2de0] text-white text-sm font-medium transition-colors">
-            <Play className="w-4 h-4" /> Run New Investigation
-          </button>
+      ))}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+
+function InvestigationCard({
+  inv,
+  onClick,
+  isActive,
+}: {
+  inv: Investigation;
+  onClick: () => void;
+  isActive: boolean;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`w-full text-left p-4 rounded-lg border transition-all duration-200 ${
+        isActive
+          ? "bg-primary/10 border-primary"
+          : "bg-surface-light border-surface-border hover:border-primary/40"
+      }`}
+    >
+      <div className="flex items-start justify-between gap-3 mb-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="text-xs text-text-secondary font-mono shrink-0">{inv.id}</span>
+          <span
+            className={`text-[10px] px-1.5 py-0.5 rounded font-semibold uppercase shrink-0 ${SEV_COLORS[inv.severity]}`}
+          >
+            {inv.severity}
+          </span>
+        </div>
+        <span
+          className={`text-[10px] px-2 py-0.5 rounded-full shrink-0 ${STATUS_COLORS[inv.status]}`}
+        >
+          {inv.status.replace("_", " ")}
+        </span>
+      </div>
+      <h4 className="text-sm font-medium text-foreground mb-2 line-clamp-2">{inv.title}</h4>
+      <div className="flex items-center justify-between text-xs text-text-secondary">
+        <div className="flex items-center gap-1">
+          <Clock size={10} />
+          <span>{formatRelative(inv.createdAt)}</span>
+        </div>
+        <div className="flex items-center gap-1">
+          <Target size={10} />
+          <span>{inv.affectedAssets.length} assets</span>
+        </div>
+      </div>
+      <div className="flex flex-wrap gap-1 mt-2">
+        {inv.mitreTactics.slice(0, 3).map((t) => (
+          <span
+            key={t}
+            className="text-[9px] px-1.5 py-0.5 rounded bg-primary/15 text-primary-light"
+          >
+            {t}
+          </span>
+        ))}
+        {inv.mitreTactics.length > 3 && (
+          <span className="text-[9px] px-1.5 py-0.5 rounded bg-surface text-text-secondary">
+            +{inv.mitreTactics.length - 3}
+          </span>
         )}
       </div>
+    </button>
+  );
+}
 
-      {/* Queue Tab */}
-      {tab === "queue" && (
-        <div className="space-y-6">
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-            {stats.map(s => (
-              <div key={s.label} className="rounded-lg border border-[#2a2b3d] bg-[#1a1b2e] p-4">
-                <div className="flex items-center gap-2 text-[#8892a4] text-xs mb-2">
-                  <s.icon className="w-3.5 h-3.5" />{s.label}
-                </div>
-                <div className="text-xl font-bold text-white">{s.value}</div>
+/* ------------------------------------------------------------------ */
+
+function SimulationProgress({ step }: { step: number }) {
+  const total = 5;
+  const pct = Math.min((step / total) * 100, 100);
+  const labels = [
+    "Hypothesis Formation",
+    "Data Collection",
+    "Correlation",
+    "Report Generation",
+    "Recommended Actions",
+  ];
+
+  return (
+    <div className="mb-6">
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-xs text-text-secondary">
+          Investigation Progress — Step {Math.min(step, total)} of {total}
+        </span>
+        <span className="text-xs font-mono text-accent">{Math.round(pct)}%</span>
+      </div>
+      <div className="h-2 bg-surface rounded-full overflow-hidden">
+        <div
+          className="h-full bg-gradient-to-r from-primary to-accent rounded-full transition-all duration-700 ease-out"
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      <div className="flex justify-between mt-2">
+        {labels.map((l, i) => (
+          <span
+            key={l}
+            className={`text-[9px] hidden sm:block ${
+              i < step
+                ? "text-accent"
+                : i === step
+                ? "text-primary-light"
+                : "text-text-secondary/40"
+            }`}
+          >
+            {l}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Investigation Viewer                                               */
+/* ------------------------------------------------------------------ */
+
+function InvestigationViewer({
+  investigation,
+  isSimulating,
+  simStep,
+  executedActions,
+  onExecuteAction,
+}: {
+  investigation: Investigation;
+  isSimulating: boolean;
+  simStep: number;
+  executedActions: Set<number>;
+  onExecuteAction: (idx: number) => void;
+}) {
+  const inv = investigation;
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <div className="flex items-center gap-2 mb-1">
+            <span className="text-xs text-text-secondary font-mono">{inv.id}</span>
+            <span
+              className={`text-[10px] px-1.5 py-0.5 rounded font-semibold uppercase ${SEV_COLORS[inv.severity]}`}
+            >
+              {inv.severity}
+            </span>
+            <span
+              className={`text-[10px] px-2 py-0.5 rounded-full ${STATUS_COLORS[inv.status]}`}
+            >
+              {inv.status.replace("_", " ")}
+            </span>
+          </div>
+          <h3 className="text-lg font-semibold text-foreground">{inv.title}</h3>
+        </div>
+        <div className="flex gap-1 shrink-0">
+          {inv.aiModels.map((m) => (
+            <span
+              key={m}
+              className="text-[10px] px-2 py-1 rounded bg-primary/20 text-primary-light font-mono border border-primary/30"
+            >
+              {m}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      {isSimulating && <SimulationProgress step={simStep} />}
+
+      {/* Step 1: Hypothesis */}
+      {simStep >= 1 && (
+        <div className="analyst-enter bg-surface-light border border-surface-border rounded-lg p-4">
+          <div className="flex items-center gap-2 mb-3">
+            <Brain size={16} className="text-primary-light" />
+            <h4 className="text-sm font-semibold text-foreground">Hypothesis Formation</h4>
+            {isSimulating && simStep === 1 && (
+              <span className="text-xs text-primary-light ml-auto">
+                Analyzing<ThinkingDots />
+              </span>
+            )}
+            {simStep > 1 && <CheckCircle size={14} className="text-success ml-auto" />}
+          </div>
+          <p className="text-sm text-text-secondary leading-relaxed">{inv.hypothesis}</p>
+        </div>
+      )}
+
+      {/* Step 2: Data Collection */}
+      {simStep >= 2 && (
+        <div className="analyst-enter bg-surface-light border border-surface-border rounded-lg p-4">
+          <div className="flex items-center gap-2 mb-3">
+            <Search size={16} className="text-accent-blue" />
+            <h4 className="text-sm font-semibold text-foreground">Data Collection</h4>
+            {isSimulating && simStep === 2 && (
+              <span className="text-xs text-accent-blue ml-auto">
+                Querying sources<ThinkingDots />
+              </span>
+            )}
+            {simStep > 2 && <CheckCircle size={14} className="text-success ml-auto" />}
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {inv.dataSources.map((src) => (
+              <div
+                key={src}
+                className="flex items-center gap-2 text-xs p-2 rounded bg-success/10 text-success transition-all duration-300"
+              >
+                <CheckCircle size={12} className="text-success" />
+                <span>{src}</span>
               </div>
             ))}
           </div>
+        </div>
+      )}
 
-          <div className="flex gap-4">
-            {/* Investigation List */}
-            <div className={`space-y-2 transition-all ${selected ? "w-1/2" : "w-full"}`}>
-              {investigations.map(inv => (
-                <button key={inv.id} onClick={() => setSelected(inv)}
-                  className={`w-full text-left rounded-lg border p-4 transition-colors ${selected?.id === inv.id ? "border-[#6c3bf5] bg-[#6c3bf5]/10" : "border-[#2a2b3d] bg-[#1a1b2e] hover:border-[#6c3bf5]/50"}`}>
-                  <div className="flex items-center justify-between mb-2">
-                    <div className="flex items-center gap-3">
-                      <span className="text-xs font-mono text-[#8892a4]">{inv.id}</span>
-                      <span className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded border ${sevColor[inv.severity]}`}>{inv.severity}</span>
-                      <span className={`text-xs ${statusStyle[inv.status]}`}>{inv.status.replace("_", " ")}</span>
-                    </div>
-                    <div className="flex items-center gap-2 text-xs text-[#8892a4]">
-                      <Monitor className="w-3 h-3" />{inv.assets} assets
-                      <Clock className="w-3 h-3 ml-2" />{inv.triageTime}
-                    </div>
-                  </div>
-                  <p className="text-sm text-white">{inv.title}</p>
-                  <div className="flex gap-1.5 mt-2">
-                    {inv.mitre.map(t => (
-                      <span key={t} className="text-[10px] px-1.5 py-0.5 rounded bg-[#6c3bf5]/15 text-[#6c3bf5] border border-[#6c3bf5]/20">{t}</span>
-                    ))}
-                  </div>
-                </button>
+      {/* Step 3: Correlation */}
+      {simStep >= 3 && (
+        <div className="analyst-enter bg-surface-light border border-surface-border rounded-lg p-4">
+          <div className="flex items-center gap-2 mb-3">
+            <GitMerge size={16} className="text-accent" />
+            <h4 className="text-sm font-semibold text-foreground">Correlation Analysis</h4>
+            {isSimulating && simStep === 3 && (
+              <span className="text-xs text-accent ml-auto">
+                Drawing connections<ThinkingDots />
+              </span>
+            )}
+            {simStep > 3 && <CheckCircle size={14} className="text-success ml-auto" />}
+          </div>
+          <div className="space-y-2">
+            {inv.correlations.map((c, i) => (
+              <div
+                key={i}
+                className="flex items-center gap-2 text-xs p-2 bg-surface rounded border border-surface-border"
+              >
+                <span className="font-mono text-accent-blue">{c.from}</span>
+                <span className="text-text-secondary">
+                  --[<span className="text-warning">{c.relationship}</span>]--&gt;
+                </span>
+                <span className="font-mono text-accent-blue">{c.to}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Step 4: Report */}
+      {simStep >= 4 && (
+        <div className="analyst-enter bg-surface-light border border-surface-border rounded-lg p-4">
+          <div className="flex items-center gap-2 mb-4">
+            <FileText size={16} className="text-warning" />
+            <h4 className="text-sm font-semibold text-foreground">Investigation Report</h4>
+            {isSimulating && simStep === 4 && (
+              <span className="text-xs text-warning ml-auto">
+                Generating<ThinkingDots />
+              </span>
+            )}
+            {simStep > 4 && <CheckCircle size={14} className="text-success ml-auto" />}
+          </div>
+
+          {/* Executive Summary */}
+          <div className="mb-4">
+            <h5 className="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-2">
+              Executive Summary
+            </h5>
+            <p className="text-sm text-foreground/90 leading-relaxed">{inv.executiveSummary}</p>
+          </div>
+
+          {/* Timeline */}
+          <div className="mb-4">
+            <h5 className="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-2">
+              Timeline of Events
+            </h5>
+            <div className="space-y-1.5">
+              {inv.timeline.map((entry, i) => (
+                <div key={i} className="flex gap-3 text-xs">
+                  <span className="font-mono text-accent shrink-0 w-24">{entry.time}</span>
+                  <span className="text-foreground/80">{entry.event}</span>
+                </div>
               ))}
             </div>
+          </div>
 
-            {/* Detail Panel */}
-            {selected && (
-              <div className="w-1/2 rounded-lg border border-[#2a2b3d] bg-[#1a1b2e] p-5 space-y-4 overflow-y-auto max-h-[700px]">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-white font-semibold">{selected.id}</h3>
-                  <button onClick={() => setSelected(null)} className="text-[#8892a4] hover:text-white"><X className="w-4 h-4" /></button>
+          {/* Affected Assets & Users */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
+            <div>
+              <h5 className="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-2">
+                Affected Assets ({inv.affectedAssets.length})
+              </h5>
+              <div className="flex flex-wrap gap-1">
+                {inv.affectedAssets.map((a) => (
+                  <span
+                    key={a}
+                    className="text-[10px] px-2 py-1 rounded bg-danger/10 text-danger font-mono border border-danger/20"
+                  >
+                    {a}
+                  </span>
+                ))}
+              </div>
+            </div>
+            <div>
+              <h5 className="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-2">
+                Affected Users ({inv.affectedUsers.length})
+              </h5>
+              <div className="flex flex-wrap gap-1">
+                {inv.affectedUsers.map((u) => (
+                  <span
+                    key={u}
+                    className="text-[10px] px-2 py-1 rounded bg-warning/10 text-warning font-mono border border-warning/20"
+                  >
+                    {u}
+                  </span>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* MITRE ATT&CK Mapping */}
+          <div className="mb-4">
+            <h5 className="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-2">
+              MITRE ATT&CK Mapping
+            </h5>
+            <div className="space-y-1">
+              {inv.mitreMapping.map((m) => (
+                <div key={m.id} className="flex items-center gap-2 text-xs">
+                  <span className="font-mono text-accent-blue w-20 shrink-0">{m.id}</span>
+                  <span className="text-primary-light">{m.tactic}</span>
+                  <span className="text-text-secondary/40">|</span>
+                  <span className="text-foreground/70">{m.technique}</span>
                 </div>
-                <p className="text-sm text-white">{selected.title}</p>
-                <Section title="Summary" icon={FileText}>
-                  <p className="text-sm text-[#8892a4]">Automated triage identified a {selected.severity}-severity event chain involving {selected.assets} assets. MITRE ATT&CK tactics: {selected.mitre.join(", ")}.</p>
-                </Section>
-                <Section title="Hypothesis" icon={Brain}>
-                  <p className="text-sm text-[#8892a4]">The observed activity is consistent with a targeted intrusion leveraging {selected.mitre[0].toLowerCase()} techniques, likely orchestrated by an automated or semi-automated adversary toolkit.</p>
-                </Section>
-                <Section title="Key Findings" icon={Search}>
-                  <ul className="text-sm text-[#8892a4] list-disc list-inside space-y-1">
-                    <li>Anomalous authentication patterns detected across {selected.assets} endpoints</li>
-                    <li>Correlated events match known attack chain signatures</li>
-                    <li>Triage completed in {selected.triageTime}</li>
-                  </ul>
-                </Section>
-                <Section title="Narrative" icon={FileText}>
-                  <p className="text-sm text-[#8892a4]">The investigation was initiated by automated alert correlation. Sequential analysis of {selected.mitre.length} attack stages revealed a coherent adversary workflow. All relevant artifacts have been preserved for forensic review.</p>
-                </Section>
-                <Section title="Actions Taken" icon={Shield}>
-                  <div className="flex flex-wrap gap-2">
-                    {["Contained affected hosts", "Notified SOC lead", "Preserved evidence"].map(a => (
-                      <span key={a} className="text-xs px-2 py-1 rounded bg-[#00d4aa]/10 text-[#00d4aa] border border-[#00d4aa]/20 flex items-center gap-1">
-                        <CheckCircle className="w-3 h-3" />{a}
+              ))}
+            </div>
+          </div>
+
+          {/* Confidence & Models */}
+          <div className="flex flex-wrap items-center gap-4">
+            <div className="flex items-center gap-2">
+              <Target size={14} className="text-accent" />
+              <span className="text-xs text-text-secondary">Confidence Score:</span>
+              <span className="text-sm font-bold text-accent">{inv.confidenceScore}%</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <Brain size={14} className="text-primary-light" />
+              <span className="text-xs text-text-secondary">AI Models:</span>
+              {inv.aiModels.map((m) => (
+                <span
+                  key={m}
+                  className="text-[10px] px-2 py-0.5 rounded bg-primary/20 text-primary-light font-mono border border-primary/30"
+                >
+                  {m}
+                </span>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Step 5: Recommended Actions */}
+      {simStep >= 5 && (
+        <div className="analyst-enter bg-surface-light border border-surface-border rounded-lg p-4">
+          <div className="flex items-center gap-2 mb-3">
+            <Zap size={16} className="text-danger" />
+            <h4 className="text-sm font-semibold text-foreground">Recommended RESPOND Actions</h4>
+          </div>
+          <div className="space-y-2">
+            {inv.recommendedActions.map((a, i) => {
+              const executed = executedActions.has(i);
+              const priorityColor =
+                a.priority === "high"
+                  ? "text-danger"
+                  : a.priority === "medium"
+                  ? "text-warning"
+                  : "text-text-secondary";
+              const priorityBg =
+                a.priority === "high"
+                  ? "bg-danger/10"
+                  : a.priority === "medium"
+                  ? "bg-warning/10"
+                  : "bg-text-secondary/10";
+              return (
+                <div
+                  key={i}
+                  className={`flex items-center justify-between p-3 rounded border transition-all duration-300 ${
+                    executed
+                      ? "bg-success/10 border-success/30"
+                      : "bg-surface border-surface-border"
+                  }`}
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <span
+                      className={`text-[9px] px-1.5 py-0.5 rounded uppercase font-semibold shrink-0 ${priorityColor} ${priorityBg}`}
+                    >
+                      {a.priority}
+                    </span>
+                    <div className="min-w-0">
+                      <span className="text-sm text-foreground">{a.action}</span>
+                      <span className="text-xs text-text-secondary ml-2">
+                        Target: {a.target}
                       </span>
-                    ))}
-                  </div>
-                </Section>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Live Investigation Tab */}
-      {tab === "live" && (
-        <div className="space-y-6">
-          {/* Progress Bar */}
-          <div className="rounded-lg border border-[#2a2b3d] bg-[#1a1b2e] p-4">
-            <div className="flex items-center justify-between mb-2 text-sm">
-              <span className="text-white font-medium">Investigation Progress</span>
-              <span className="text-[#00d4aa]">{progress}%</span>
-            </div>
-            <div className="h-2 rounded-full bg-[#12131f] overflow-hidden">
-              <div className="h-full rounded-full bg-gradient-to-r from-[#6c3bf5] to-[#00d4aa] transition-all duration-700" style={{ width: `${progress}%` }} />
-            </div>
-          </div>
-
-          {simStep === 0 && (
-            <div className="flex flex-col items-center justify-center py-16 text-[#8892a4]">
-              <Brain className="w-10 h-10 mb-3 animate-pulse text-[#6c3bf5]" />
-              <p className="text-sm">Initializing AI Analyst...</p>
-            </div>
-          )}
-
-          {/* Step 1: Hypothesis */}
-          {simStep >= 1 && (
-            <StepCard step={1} title="Forming Hypothesis" icon={Brain} active={simStep === 1}>
-              {simStep === 1 && <Brain className="w-6 h-6 text-[#6c3bf5] animate-pulse" />}
-              <p className="text-sm text-[#8892a4] mt-2">
-                <span className="text-[#00d4aa] font-medium">Hypothesis:</span> Coordinated multi-stage attack originating from phishing email, with lateral movement to domain controller and potential data exfiltration via encrypted channel.
-              </p>
-            </StepCard>
-          )}
-
-          {/* Step 2: Data Sources */}
-          {simStep >= 2 && (
-            <StepCard step={2} title="Querying Data Sources" icon={Database} active={simStep === 2}>
-              <div className="grid grid-cols-2 md:grid-cols-3 gap-2 mt-2">
-                {dataSources.map((src, i) => (
-                  <div key={src} className={`flex items-center gap-2 text-sm px-3 py-2 rounded border transition-all duration-300 ${i < checkedSources ? "border-[#00d4aa]/30 bg-[#00d4aa]/5 text-[#00d4aa]" : "border-[#2a2b3d] text-[#8892a4]"}`}>
-                    {i < checkedSources ? <CheckCircle className="w-4 h-4 shrink-0" /> : <Loader2 className="w-4 h-4 shrink-0 animate-spin" />}
-                    {src}
-                  </div>
-                ))}
-              </div>
-            </StepCard>
-          )}
-
-          {/* Step 3: Correlated Events */}
-          {simStep >= 3 && (
-            <StepCard step={3} title="Correlating Events" icon={GitMerge} active={simStep === 3}>
-              <div className="space-y-2 mt-2">
-                {correlatedEvents.slice(0, shownEvents).map((ev, i) => (
-                  <div key={i} className="flex items-start gap-2 text-sm text-[#8892a4] pl-2 border-l-2 border-[#6c3bf5]/40 py-1 animate-[fadeIn_0.3s_ease-in]">
-                    <ChevronRight className="w-4 h-4 text-[#6c3bf5] shrink-0 mt-0.5" />{ev}
-                  </div>
-                ))}
-              </div>
-            </StepCard>
-          )}
-
-          {/* Step 4: Report */}
-          {simStep >= 4 && (
-            <StepCard step={4} title="Generating Report" icon={FileText} active={simStep === 4}>
-              <div className="mt-2 space-y-3 text-sm text-[#8892a4] leading-relaxed">
-                {narrative.split("\n\n").map((p, i) => <p key={i}>{p}</p>)}
-              </div>
-              <div className="flex flex-wrap gap-3 mt-4">
-                <div>
-                  <span className="text-[10px] uppercase text-[#8892a4] block mb-1">AI Models Used</span>
-                  <div className="flex gap-2">
-                    {["DIGEST", "DEMIST-2"].map(m => (
-                      <span key={m} className="text-xs px-2 py-0.5 rounded bg-[#6c3bf5]/15 text-[#6c3bf5] border border-[#6c3bf5]/25 font-mono">{m}</span>
-                    ))}
-                  </div>
-                </div>
-                <div>
-                  <span className="text-[10px] uppercase text-[#8892a4] block mb-1">MITRE Tactics</span>
-                  <div className="flex gap-1.5 flex-wrap">
-                    {["Initial Access", "Lateral Movement", "Execution", "Exfiltration"].map(t => (
-                      <span key={t} className="text-[10px] px-1.5 py-0.5 rounded bg-orange-500/10 text-orange-400 border border-orange-500/20">{t}</span>
-                    ))}
-                  </div>
-                </div>
-                <div>
-                  <span className="text-[10px] uppercase text-[#8892a4] block mb-1">Affected Assets</span>
-                  <span className="text-sm text-white font-medium">WKS-FIN-042, DC-PROD-01</span>
-                </div>
-                <div>
-                  <span className="text-[10px] uppercase text-[#8892a4] block mb-1">Affected Users</span>
-                  <span className="text-sm text-white font-medium">j.martinez@corp</span>
-                </div>
-              </div>
-            </StepCard>
-          )}
-
-          {/* Step 5: Actions */}
-          {simStep >= 5 && (
-            <StepCard step={5} title="Recommended Actions" icon={Zap} active={simStep === 5}>
-              <div className="space-y-2 mt-2">
-                {recommendedActions.map((action, i) => (
-                  <div key={i} className="flex items-center justify-between px-3 py-2.5 rounded border border-[#2a2b3d] bg-[#12131f]">
-                    <div className="flex items-center gap-2 text-sm text-white">
-                      <Shield className="w-4 h-4 text-[#6c3bf5]" />{action}
                     </div>
-                    {executed.has(i) ? (
-                      <span className="flex items-center gap-1 text-xs text-[#00d4aa]"><CheckCircle className="w-4 h-4" />Executed</span>
-                    ) : (
-                      <button onClick={() => handleExecute(i)}
-                        className="text-xs px-3 py-1 rounded bg-[#6c3bf5] hover:bg-[#5b2de0] text-white transition-colors">Execute</button>
-                    )}
                   </div>
-                ))}
-              </div>
-            </StepCard>
-          )}
+                  {executed ? (
+                    <div className="flex items-center gap-1.5 text-success text-xs shrink-0">
+                      <CheckCircle size={14} />
+                      <span>Executed</span>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => onExecuteAction(i)}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-primary hover:bg-primary-light text-white text-xs font-medium transition-colors shrink-0"
+                    >
+                      <Play size={12} />
+                      Execute
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
-          {/* Bottom Stats */}
-          {simStep >= 5 && (
-            <div className="rounded-lg border border-[#00d4aa]/20 bg-[#00d4aa]/5 p-4 flex items-center justify-center gap-8 text-sm">
-              <span className="text-[#00d4aa] font-medium flex items-center gap-1.5"><Clock className="w-4 h-4" />Triage: 11 seconds</span>
-              <span className="text-[#8892a4]">Manual equivalent: 4.2 hours</span>
-              <span className="text-white font-bold">Effort saved: 99.9%</span>
+      {/* Bottom Metrics */}
+      {simStep >= 5 && (
+        <div className="analyst-enter grid grid-cols-1 sm:grid-cols-3 gap-4 p-4 bg-surface-light border border-accent/20 rounded-lg">
+          <div className="text-center">
+            <div className="text-xs text-text-secondary mb-1">Triage Time</div>
+            <div className="text-2xl font-bold text-accent">{inv.triageTimeSeconds}s</div>
+            <div className="text-[10px] text-text-secondary">
+              Manual equivalent: {inv.manualEquivalentMinutes} minutes
             </div>
-          )}
-
-          {!simRunning && simStep === 0 && (
-            <button onClick={startSimulation}
-              className="mx-auto flex items-center gap-2 px-6 py-3 rounded-lg bg-[#6c3bf5] hover:bg-[#5b2de0] text-white font-medium transition-colors">
-              <Play className="w-5 h-5" /> Start Investigation
-            </button>
-          )}
+          </div>
+          <div className="text-center">
+            <div className="text-xs text-text-secondary mb-1">Analyst Effort Saved</div>
+            <div className="text-2xl font-bold text-accent">
+              {Math.round(
+                ((inv.manualEquivalentMinutes * 60 - inv.triageTimeSeconds) /
+                  (inv.manualEquivalentMinutes * 60)) *
+                  100
+              )}
+              %
+            </div>
+            <div className="text-[10px] text-text-secondary">vs manual investigation</div>
+          </div>
+          <div className="text-center">
+            <div className="text-xs text-text-secondary mb-1">Confidence Score</div>
+            <div className="text-2xl font-bold text-primary-light">{inv.confidenceScore}%</div>
+            <div className="text-[10px] text-text-secondary">AI-generated assessment</div>
+          </div>
         </div>
       )}
     </div>
   );
 }
 
-function Section({ title, icon: Icon, children }: { title: string; icon: React.ElementType; children: React.ReactNode }) {
-  return (
-    <div>
-      <h4 className="text-xs uppercase text-[#8892a4] flex items-center gap-1.5 mb-2"><Icon className="w-3.5 h-3.5" />{title}</h4>
-      {children}
-    </div>
-  );
-}
+/* ------------------------------------------------------------------ */
+/*  Main Component                                                     */
+/* ------------------------------------------------------------------ */
 
-function StepCard({ step, title, icon: Icon, active, children }: { step: number; title: string; icon: React.ElementType; active: boolean; children: React.ReactNode }) {
+export default function AIAnalystModule({ defaultTab }: { defaultTab?: string }) {
+  const [activeTab, setActiveTab] = useState<"queue" | "viewer">(
+    defaultTab === "viewer" ? "viewer" : "queue"
+  );
+  const [investigations, setInvestigations] = useState<Investigation[]>([]);
+  const [selectedInv, setSelectedInv] = useState<Investigation | null>(null);
+  const [isSimulating, setIsSimulating] = useState(false);
+  const [simStep, setSimStep] = useState(0);
+  const [executedActions, setExecutedActions] = useState<Set<number>>(new Set());
+  const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+
+  useEffect(() => {
+    ensureStyles();
+    setInvestigations(generateInvestigations(8));
+  }, []);
+
+  // Cleanup timers on unmount
+  useEffect(() => {
+    return () => {
+      timersRef.current.forEach(clearTimeout);
+    };
+  }, []);
+
+  const clearTimers = useCallback(() => {
+    timersRef.current.forEach(clearTimeout);
+    timersRef.current = [];
+  }, []);
+
+  const selectInvestigation = useCallback(
+    (inv: Investigation) => {
+      clearTimers();
+      setSelectedInv(inv);
+      setIsSimulating(false);
+      setSimStep(5);
+      setExecutedActions(new Set());
+      setActiveTab("viewer");
+    },
+    [clearTimers]
+  );
+
+  const runNewInvestigation = useCallback(() => {
+    clearTimers();
+    const newInv = generateInvestigation();
+    newInv.status = "in_progress";
+    setInvestigations((prev) => [newInv, ...prev]);
+    setSelectedInv(newInv);
+    setIsSimulating(true);
+    setSimStep(0);
+    setExecutedActions(new Set());
+    setActiveTab("viewer");
+
+    const delays = [1500, 3000, 5000, 7000, 9000];
+    delays.forEach((delay, i) => {
+      const t = setTimeout(() => {
+        setSimStep(i + 1);
+        if (i === delays.length - 1) {
+          setIsSimulating(false);
+          setInvestigations((prev) =>
+            prev.map((inv) =>
+              inv.id === newInv.id ? { ...inv, status: "completed" as const } : inv
+            )
+          );
+        }
+      }, delay);
+      timersRef.current.push(t);
+    });
+  }, [clearTimers]);
+
+  const handleExecuteAction = useCallback((idx: number) => {
+    setExecutedActions((prev) => {
+      const next = new Set(prev);
+      next.add(idx);
+      return next;
+    });
+  }, []);
+
   return (
-    <div className={`rounded-lg border p-5 transition-colors ${active ? "border-[#6c3bf5] bg-[#6c3bf5]/5" : "border-[#2a2b3d] bg-[#1a1b2e]"}`}>
-      <div className="flex items-center gap-3 mb-1">
-        <span className="flex items-center justify-center w-6 h-6 rounded-full bg-[#6c3bf5]/20 text-[#6c3bf5] text-xs font-bold">{step}</span>
-        <Icon className={`w-5 h-5 ${active ? "text-[#6c3bf5] animate-pulse" : "text-[#00d4aa]"}`} />
-        <h3 className="text-white font-medium text-sm">{title}</h3>
-        {!active && <CheckCircle className="w-4 h-4 text-[#00d4aa] ml-auto" />}
+    <div className="space-y-4">
+      {/* Tab Bar */}
+      <div className="flex items-center gap-2 border-b border-surface-border pb-3">
+        <button
+          onClick={() => setActiveTab("queue")}
+          className={`flex items-center gap-2 px-4 py-2 rounded-t-lg text-sm font-medium transition-colors ${
+            activeTab === "queue"
+              ? "bg-surface-light text-accent border border-surface-border border-b-transparent -mb-[13px] pb-[13px]"
+              : "text-text-secondary hover:text-foreground"
+          }`}
+        >
+          <Shield size={14} />
+          Investigation Queue
+        </button>
+        <button
+          onClick={() => setActiveTab("viewer")}
+          className={`flex items-center gap-2 px-4 py-2 rounded-t-lg text-sm font-medium transition-colors ${
+            activeTab === "viewer"
+              ? "bg-surface-light text-accent border border-surface-border border-b-transparent -mb-[13px] pb-[13px]"
+              : "text-text-secondary hover:text-foreground"
+          }`}
+        >
+          <Eye size={14} />
+          Investigation Viewer
+        </button>
+        <div className="flex-1" />
+        <button
+          onClick={runNewInvestigation}
+          disabled={isSimulating}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+            isSimulating
+              ? "bg-surface-light text-text-secondary cursor-not-allowed"
+              : "bg-primary hover:bg-primary-light text-white"
+          }`}
+        >
+          <Brain size={14} />
+          {isSimulating ? "Investigating..." : "Run New Investigation"}
+        </button>
       </div>
-      {children}
+
+      {/* Tab Content */}
+      {activeTab === "queue" && (
+        <div>
+          <StatsBar investigations={investigations} />
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-[600px] overflow-y-auto pr-1">
+            {investigations.map((inv) => (
+              <InvestigationCard
+                key={inv.id}
+                inv={inv}
+                onClick={() => selectInvestigation(inv)}
+                isActive={selectedInv?.id === inv.id}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {activeTab === "viewer" && selectedInv && (
+        <InvestigationViewer
+          investigation={selectedInv}
+          isSimulating={isSimulating}
+          simStep={simStep}
+          executedActions={executedActions}
+          onExecuteAction={handleExecuteAction}
+        />
+      )}
+
+      {activeTab === "viewer" && !selectedInv && (
+        <div className="flex flex-col items-center justify-center py-20 text-center">
+          <Brain size={48} className="text-text-secondary/30 mb-4" />
+          <h3 className="text-lg font-semibold text-text-secondary mb-2">
+            No Investigation Selected
+          </h3>
+          <p className="text-sm text-text-secondary/60 mb-6 max-w-md">
+            Select an investigation from the queue or run a new AI-powered investigation to see the
+            full analysis and recommended actions.
+          </p>
+          <button
+            onClick={runNewInvestigation}
+            className="flex items-center gap-2 px-6 py-3 rounded-lg bg-primary hover:bg-primary-light text-white text-sm font-medium transition-colors"
+          >
+            <Play size={16} />
+            Run New Investigation
+          </button>
+        </div>
+      )}
     </div>
   );
 }
